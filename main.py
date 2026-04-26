@@ -1,96 +1,111 @@
-from Cryptodome.Hash import SHA256
-from Cryptodome.Cipher import AES
-from Cryptodome.Util.Padding import pad, unpad
 import os
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Hash import SHA256
+from Crypto.Random import get_random_bytes
 
+# Configuration
+SALT_SIZE = 16
+ITERATIONS = 600000 
+KEY_LEN = 32         
 
 def ReadData(address):
     if os.path.exists(address):
         with open(address, "rb") as f:
-            data = f.read()
-        return data
+            return f.read()
     else:
-        print("File not found.")
+        print("Error: File not found.")
         return None
 
-
-def EncryptData(fdata, cipher):
-    padded_fdata = pad(fdata, AES.block_size)
-    encrypted_data = cipher.encrypt(padded_fdata)
-    return encrypted_data
-
-
-def DecryptData(fdata, cipher):
-    padded_decrypted_data = cipher.decrypt(fdata)
-    decrypted_data = unpad(padded_decrypted_data, AES.block_size)
-    return decrypted_data
-
-
-def WriteEncryptedData(fdata, address):
-    address = address + '.ded'
+def WriteData(address, data, extension=".ded"):
+    if not address.endswith(extension) and extension != "":
+        address = address + extension
     with open(address, "wb") as f:
-        f.write(fdata)
+        f.write(data)
+    print(f"Success: Data written to {address}")
 
+def DeriveKey(password, salt):
+    """Helper function to derive key."""
+    return PBKDF2(password, salt, dkLen=KEY_LEN, count=ITERKS, hmac_hash_module=SHA256)
 
-def WriteAnyData(fdata, address):
-    with open(address, "wb") as f:
-        f.write(fdata)
+# We use a global or passed constant for iterations to keep it clean
+ITERKS = 600000 
 
+def EncryptData(plaintext, salt, key):
+    """
+    Encrypts data using the provided salt and pre-derived key.
+    Returns the full blob including salt, nonce, and tag.
+    """
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    
+    # We MUST prepend the salt and nonce so the decrypter knows how to work
+    return salt + cipher.nonce + tag + ciphertext
 
-'''Prompt fucntions exist largly for testing purposes'''
-
+def DecryptData(encrypted_blob, password):
+    """Decrypts data by extracting salt from the blob first."""
+    try:
+        # 1. Extract the salt from the start of the blob
+        salt = encrypted_blob[:SALT_SIZE]
+        
+        # 2. Re-derive the key using the extracted salt and the user password
+        key = PBKDF2(password, salt, dkLen=KEY_LEN, count=ITERKS, hmac_hash_module=SHA256)
+        
+        # 3. Extract the rest of the pieces
+        nonce = encrypted_blob[SALT_SIZE : SALT_SIZE + 16]
+        tag = encrypted_blob[SALT_SIZE + 16 : SALT_SIZE + 16 + 16]
+        ciphertext = encrypted_blob[SALT_SIZE + 16 + 16:]
+        
+        # 4. Decrypt and Verify
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag)
+    except Exception:
+        return None
 
 def EncryptionPrompt():
-    print("Cryptodome Encryption Test")
-    readAddress = input("Input file address:")
-    password = input("Key:")
-    pwHash = SHA256.new(password.encode(encoding='utf-8')).digest()
-    cipher = AES.new(pwHash, AES.MODE_ECB)
+    print("\n--- AES-GCM Encryption Mode ---")
+    readAddress = input("Input file path: ")
+    password = input("Enter Password: ")
+    
     data = ReadData(readAddress)
-
     if data is not None:
-        writeAddress = input("Output file address:")
-        encryptedData = EncryptData(pwHash + data, cipher)
-        WriteEncryptedData(encryptedData, writeAddress)
-        print("Operation Complete")
-    else:
-        print("Address not found.")
-        EncryptionPrompt()
+        # --- THE MOVED OPERATIONS ---
+        print("Generating secure salt and deriving key...")
+        salt = get_random_bytes(SALT_SIZE)
+        
+        
+        # Re-implementing the key derivation directly for the prompt:
+        key = PBKDF2(password, salt, dkLen=KEY_LEN, count=ITERKS, hmac_hash_module=SHA256)
+        # ----------------------------
 
+        writeAddress = input("Output file path: ")
+        
+        # Pass the prepared salt and key into the encryption function
+        encrypted_blob = EncryptData(data, salt, key)
+        
+        WriteData(writeAddress, encrypted_blob)
+        print("Operation Complete.")
 
 def DecryptionPrompt():
-    print("Cryptodome Decryption Test")
-    readAddress = input("Input file address:")
-    password = input("Key:")
-    pwHash = SHA256.new(password.encode(encoding='utf-8')).digest()
-    cipher = AES.new(pwHash, AES.MODE_ECB)
-    data = ReadData(readAddress)
-
-    # Check the read data to make sure it worked
-    if data is not None:
-        writeAddress = input("Output file address:")
-        decryptedData = DecryptData(data, cipher)
-        # Extract the stored hash from the decrypted data
-        # The number is based on the number of bytes in the hash
-        storedHash = decryptedData[:32]
-        # Remove the hash from the decrypted data
-        finDecryptedData = decryptedData[32:]
-
-        # Comparing hashes to check intergrity
-        if pwHash == storedHash:
-            WriteAnyData(finDecryptedData, writeAddress)
-            print("Operation Complete")
+    print("\n--- AES-GCM Decryption Mode ---")
+    readAddress = input("Input file path: ")
+    password = input("Enter Password: ")
+    
+    encrypted_blob = ReadData(readAddress)
+    if encrypted_blob is not None:
+        writeAddress = input("Output file path: ")
+        decrypted_data = DecryptData(encrypted_blob, password)
+        
+        if decrypted_data is not None:
+            WriteData(writeAddress, decrypted_data, extension="")
+            print("Operation Complete.")
         else:
-            print("Hash mismatch.")
-            DecryptionPrompt()
-    else:
-        DecryptionPrompt()
-
+            print("Decryption Failed: Wrong password or file corruption.")
 
 if __name__ == "__main__":
-
-    ans = input(
-        "Welcome to (En/De)cryption CLI Tool. \n 1. Encryption \n 2. Decryption" " \n 3. Exit \n->")
+    print("Welcome to Secure AES-GCM CLI Tool")
+    print("1. Encrypt\n2. Decrypt\n3. Exit")
+    ans = input("-> ")
 
     if ans == '1':
         EncryptionPrompt()
@@ -98,4 +113,3 @@ if __name__ == "__main__":
         DecryptionPrompt()
     elif ans == '3':
         print("Goodbye")
-        exit()
